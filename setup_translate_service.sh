@@ -12,7 +12,7 @@ command -v xclip >/dev/null 2>&1 || MISSING_DEPS+=("xclip")
 command -v curl >/dev/null 2>&1 || MISSING_DEPS+=("curl")
 command -v python3 >/dev/null 2>&1 || MISSING_DEPS+=("python3")
 command -v zenity >/dev/null 2>&1 || MISSING_DEPS+=("zenity")
-command -v uv >/dev/null 2>&1 || MISSING_DEPS+=("uv")
+command -v espeak-ng >/dev/null 2>&1 || MISSING_DEPS+=("espeak-ng")
 
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
     echo "❌ Missing dependencies: ${MISSING_DEPS[*]}"
@@ -27,22 +27,6 @@ fi
 echo "✅ All dependencies found"
 echo ""
 
-# Check/install Piper TTS
-echo "🔊 Checking Piper TTS installation..."
-if ! command -v piper >/dev/null 2>&1; then
-    echo "📦 Piper not found. Installing via uv..."
-    uv install piper-tts
-    if [ $? -ne 0 ]; then
-        echo "❌ Failed to install Piper. Please install manually:"
-        echo "  uv install piper-tts"
-        exit 1
-    fi
-    echo "✅ Piper installed successfully"
-else
-    echo "✅ Piper already installed"
-fi
-echo ""
-
 # Get language preferences
 read -p "🔤 Source language (default: auto): " SRC_LANG
 SRC_LANG=${SRC_LANG:-auto}
@@ -53,27 +37,6 @@ DST_LANG=${DST_LANG:-en}
 echo ""
 echo "✅ Languages configured: $SRC_LANG → $DST_LANG"
 echo ""
-
-# Get Piper model path
-echo "🎤 Piper TTS Configuration"
-echo "   Download models from: https://github.com/rhasspy/piper/releases"
-echo "   Example: en_US-lessac-medium.onnx"
-echo ""
-read -p "📁 Path to Piper model file (.onnx): " PIPER_MODEL
-
-# Expand tilde to home directory
-PIPER_MODEL="${PIPER_MODEL/#\~/$HOME}"
-
-# Check if model file exists
-if [ ! -f "$PIPER_MODEL" ]; then
-    echo "❌ Model file not found: $PIPER_MODEL"
-    echo ""
-    echo "📥 Download models from:"
-    echo "   https://github.com/rhasspy/piper/releases/tag/v1.2.0"
-    exit 1
-fi
-
-echo "✅ Model found: $PIPER_MODEL"
 
 # Create script directory
 SCRIPT_DIR="$HOME/.local/bin"
@@ -183,7 +146,6 @@ TTS_SCRIPT_PATH="$SCRIPT_DIR/google-translate-tts.sh"
 cat > "$TTS_SCRIPT_PATH" << 'EOFTTS'
 #!/bin/bash
 
-PIPER_MODEL="__PIPER_MODEL__"
 LOG_FILE="$HOME/.local/share/translate/tts.log"
 
 # Function to log messages
@@ -210,9 +172,9 @@ if [ -z "$TEXT" ]; then
     exit 1
 fi
 
-# Use Piper for TTS (outputs directly to audio)
-log_msg "Speaking text with Piper (model: $PIPER_MODEL)..."
-echo "$TEXT" | ~/.local/bin/piper --model "$PIPER_MODEL" 2>> "$LOG_FILE"
+# Use espeak-ng for TTS
+log_msg "Speaking text with espeak-ng..."
+espeak-ng "$TEXT" 2>> "$LOG_FILE"
 
 EXIT_CODE=$?
 
@@ -225,9 +187,6 @@ fi
 log_msg "Success!"
 
 EOFTTS
-
-# Replace placeholders
-sed -i "s|__PIPER_MODEL__|$PIPER_MODEL|g" "$TTS_SCRIPT_PATH"
 
 chmod +x "$TTS_SCRIPT_PATH"
 echo "✅ TTS script created at: $TTS_SCRIPT_PATH"
