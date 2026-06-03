@@ -1,85 +1,95 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── dependency check ──────────────────────────────────────────────────────────
-if ! command -v gum &>/dev/null; then
-  echo ""
-  echo "  ✗ 'gum' is not installed."
-  echo ""
-  echo "  Install it:"
-  echo "    brew install gum"
-  echo "    sudo apt install gum"
-  echo "    go install github.com/charmbracelet/gum@latest"
-  echo ""
-  echo "  Docs: https://github.com/charmbracelet/gum"
+# ── ۱. بررسی پیش‌نیاز ────────────────────────────────────────────────────────
+if ! command -v gum &> /dev/null; then
+  echo "Error: 'gum' is not installed."
+  echo "Install it via:"
+  echo "  brew install gum"
+  echo "  sudo apt install gum"
+  echo "  go install github.com/charmbracelet/gum@latest"
+  echo "  https://github.com/charmbracelet/gum"
   exit 1
 fi
 
-# ── rewrite: swap host only, touch nothing else ───────────────────────────────
+# ── ۲. تابع بازنویسی با Regex ───────────────────────────────────────────────
 rewrite() {
   local uri="$1"
   local new_ip="$2"
-
-  local scheme after_scheme fragment no_frag query no_query user hostpath path hostport host port
-
-  scheme="${uri%%://*}"
-  after_scheme="${uri#*://}"
-
-  fragment="${after_scheme##*#}"
-  no_frag="${after_scheme%#*}"
-
-  query="${no_frag#*\?}"
-  no_query="${no_frag%%\?*}"
-
-  user="${no_query%%@*}"
-  hostpath="${no_query#*@}"
-
-  if [[ "$hostpath" == */* ]]; then
-    path="/${hostpath#*/}"
-    hostport="${hostpath%%/*}"
+  # این الگو فقط host/ip را جدا و جایگزین می‌کند و بقیه URI دست‌نخورده می‌ماند
+  if [[ "$uri" =~ ^(.*://[^@]+@)([^:/?#]+)([:/?#].*)?$ ]]; then
+    echo "${BASH_REMATCH[1]}${new_ip}${BASH_REMATCH[3]}"
   else
-    path=""
-    hostport="$hostpath"
+    echo "$uri"
   fi
-
-  port="${hostport##*:}"
-
-  echo "${scheme}://${user}@${new_ip}:${port}${path}?${query}#${fragment}"
 }
 
-# ── UI ────────────────────────────────────────────────────────────────────────
-gum style \
-  --border double --border-foreground 99 \
-  --padding "1 4" --margin "1 0" \
-  "VLESS / Trojan Config IP Rewriter"
+# ── ۳. دریافت متغیرها از خط فرمان (CLI) ──────────────────────────────────────
+CONFIG=""
+IPS_FILE=""
+OUT="output.txt"
+INTERACTIVE=true
 
-gum style --foreground 212 "① Paste your config URI:"
-CONFIG=$(gum input \
-  --placeholder "vless://uuid@host:port?...#name" \
-  --width 120)
+while getopts "c:i:o:h" opt; do
+  case $opt in
+    c) CONFIG="$OPTARG" ;;
+    i) IPS_FILE="$OPTARG" ;;
+    o) OUT="$OPTARG" ;;
+    h) 
+      echo "Usage: $0 [-c config_uri] [-i clean_ips.txt] [-o output.txt]"
+      exit 0 
+      ;;
+    *) exit 1 ;;
+  esac
+done
 
-[[ -z "$CONFIG" ]] && { gum style --foreground 196 "✗ No config. Aborting."; exit 1; }
+# اگر هر دو کانفیگ و فایل IP داده شده باشند، حالت تعاملی خاموش می‌شود
+if [[ -n "$CONFIG" && -n "$IPS_FILE" ]]; then
+  INTERACTIVE=false
+fi
 
-gum style --foreground 212 "② Paste your clean IPs (one per line):"
-RAW=$(gum write \
-  --placeholder "1.2.3.4
-5.6.7.8
-..." \
-  --width 60 --height 15)
+# ── ۴. رابط کاربری (Interactive / Non-Interactive) ───────────────────────────
+if $INTERACTIVE; then
+  gum style --border normal --margin "1" --padding "1" --border-foreground 212 "VLESS/Trojan Config Rewriter"
+  
+  CONFIG=$(gum input --placeholder "vless://uuid@host:port?...#name" --prompt "Config: " ${CONFIG:+--value "$CONFIG"})
+  [[ -z "$CONFIG" ]] && exit 0
 
-[[ -z "$RAW" ]] && { gum style --foreground 196 "✗ No IPs. Aborting."; exit 1; }
+  echo "Paste clean IPs (Ctrl+D to finish):"
+  RAW=$(gum write --placeholder "1.1.1.1...")
+  [[ -z "$RAW" ]] && exit 0
 
-gum style --foreground 212 "③ Output filename:"
-OUT=$(gum input --placeholder "output.txt" --value "output.txt")
-[[ -z "$OUT" ]] && OUT="output.txt"
+  OUT=$(gum input --placeholder "output.txt" --value "$OUT" --prompt "Output File: ")
+else
+  # حالت CLI
+  if [[ ! -f "$IPS_FILE" ]]; then
+    echo "Error: IPS file '$IPS_FILE' not found!"
+    exit 1
+  fi
+  RAW=$(cat "$IPS_FILE")
+fi
 
-# ── process ───────────────────────────────────────────────────────────────────
+# ── ۵. پردازش و نوشتن فایل ──────────────────────────────────────────────────
 > "$OUT"
 count=0
-while IFS= read -r ip; do
+
+# استفاده از || [[ -n "$ip" ]] برای جلوگیری از حذف خط آخر فایل
+while IFS= read -r ip || [[ -n "$ip" ]]; do
+  # پاکسازی کاراکترهای اضافی مثل اسپیس و \r
+  ip="${ip//$'\r'/}"
+  ip="${ip// /}"
   [[ -z "$ip" ]] && continue
+  
   rewrite "$CONFIG" "$ip" >> "$OUT"
-  (( count++ ))
+  
+  # رفع باگ set -e در bash (جایگزین count++)
+  count=$((count + 1))
 done <<< "$RAW"
 
-gum style --foreground 76 "✓ $count configs saved to: $OUT"
+# ── ۶. پیام پایان ────────────────────────────────────────────────────────────
+if $INTERACTIVE; then
+  gum style --foreground 212 "✓ $count configs saved to: $OUT"
+else
+  echo "✓ $count configs saved to: $OUT"
+fi
+
