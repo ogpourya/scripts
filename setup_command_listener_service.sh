@@ -32,7 +32,7 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 4444
 
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('0.0.0.0', PORT))
+s.bind(('127.0.0.1', PORT))
 s.listen(1)
 print(f"Server running on port {PORT}...")
 
@@ -108,9 +108,9 @@ if systemctl --user is-active --quiet "$SERVICE_NAME"; then
     echo "  Restart: systemctl --user restart $SERVICE_NAME"
     echo "  Logs:    journalctl --user -u $SERVICE_NAME -f"
     echo ""
-    echo "📱 Connect using:"
-    LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
-    echo "  nc ${LOCAL_IP:-<host-ip>} $PORT"
+    echo "📱 Connect locally or forward via SSH:"
+    echo "  nc 127.0.0.1 $PORT"
+    echo "  ssh -R $PORT:127.0.0.1:$PORT <vps>"
 else
     echo ""
     echo "❌ Service failed to start. Check logs:"
