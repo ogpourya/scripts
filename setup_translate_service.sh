@@ -1,23 +1,54 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "🌐 Setting up Google Translate service for selected text (Ubuntu Wayland)"
+echo "🌐 Setting up Google Translate service for selected text (GNOME Wayland / XFCE X11)"
 echo "⚠️  Running it will safely install or update the service"
 echo ""
+
+# Detect session type (wayland vs x11)
+SESSION_TYPE="${XDG_SESSION_TYPE:-}"
+if [ -z "$SESSION_TYPE" ]; then
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        SESSION_TYPE="wayland"
+    elif [ -n "${DISPLAY:-}" ]; then
+        SESSION_TYPE="x11"
+    fi
+fi
 
 # Check required dependencies
 echo "🔍 Checking dependencies..."
 MISSING_DEPS=()
 
-command -v wl-paste >/dev/null 2>&1 || MISSING_DEPS+=("wl-clipboard")
-command -v python3 >/dev/null 2>&1 || MISSING_DEPS+=("python3")
+if [ "$SESSION_TYPE" = "wayland" ]; then
+    command -v wl-paste >/dev/null 2>&1 || MISSING_DEPS+=("wl-clipboard")
+elif [ "$SESSION_TYPE" = "x11" ]; then
+    if ! command -v xclip >/dev/null 2>&1 && ! command -v xsel >/dev/null 2>&1; then
+        MISSING_DEPS+=("xclip")
+    fi
+else
+    if ! command -v wl-paste >/dev/null 2>&1 && ! command -v xclip >/dev/null 2>&1 && ! command -v xsel >/dev/null 2>&1; then
+        MISSING_DEPS+=("xclip or wl-clipboard")
+    fi
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    if command -v pacman >/dev/null 2>&1; then
+        MISSING_DEPS+=("python")
+    else
+        MISSING_DEPS+=("python3")
+    fi
+fi
 command -v zenity >/dev/null 2>&1 || MISSING_DEPS+=("zenity")
 
 if [ ${#MISSING_DEPS[@]} -ne 0 ]; then
     echo "❌ Missing dependencies: ${MISSING_DEPS[*]}"
     echo ""
     echo "📦 Install them with:"
-    echo "  sudo apt update && sudo apt install -y ${MISSING_DEPS[*]}"
+    if command -v pacman >/dev/null 2>&1; then
+        echo "  sudo pacman -S --needed ${MISSING_DEPS[*]}"
+    else
+        echo "  sudo apt update && sudo apt install -y ${MISSING_DEPS[*]}"
+    fi
     exit 1
 fi
 
@@ -136,15 +167,24 @@ log_msg() {
 
 log_msg "Translation request started ($SRC_LANG -> $DST_LANG)"
 
-# Safe text capture with timeout to prevent deadlocks on hung Wayland selection
+# Safe text capture with timeout across Wayland and X11
 capture_text() {
     local text=""
-    # 1. Try Wayland primary selection
-    text=$(timeout 1.5s wl-paste -p --type text/plain 2>/dev/null || timeout 1.5s wl-paste -p 2>/dev/null || true)
-    
-    # 2. Fallback to regular clipboard
-    if [ -z "${text//[[:space:]]/}" ]; then
-        text=$(timeout 1.5s wl-paste --type text/plain 2>/dev/null || timeout 1.5s wl-paste 2>/dev/null || true)
+    if [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        text=$(timeout 1.5s wl-paste -p --type text/plain 2>/dev/null || timeout 1.5s wl-paste -p 2>/dev/null || true)
+        if [ -z "${text//[[:space:]]/}" ]; then
+            text=$(timeout 1.5s wl-paste --type text/plain 2>/dev/null || timeout 1.5s wl-paste 2>/dev/null || true)
+        fi
+    elif command -v xclip >/dev/null 2>&1; then
+        text=$(timeout 1.5s xclip -o -selection primary 2>/dev/null || true)
+        if [ -z "${text//[[:space:]]/}" ]; then
+            text=$(timeout 1.5s xclip -o -selection clipboard 2>/dev/null || true)
+        fi
+    elif command -v xsel >/dev/null 2>&1; then
+        text=$(timeout 1.5s xsel -op 2>/dev/null || true)
+        if [ -z "${text//[[:space:]]/}" ]; then
+            text=$(timeout 1.5s xsel -ob 2>/dev/null || true)
+        fi
     fi
     printf '%s' "$text"
 }
@@ -252,9 +292,20 @@ chmod +x "$SCRIPT_PATH"
 echo "✅ Translation script installed to: $SCRIPT_PATH"
 echo "📝 Log file: $LOG_DIR/translate.log"
 
-# Configure GNOME keyboard shortcut if gsettings is available
+# Configure desktop keyboard shortcut (XFCE or GNOME)
 echo ""
-if command -v gsettings >/dev/null 2>&1; then
+DESKTOP_ENV="${XDG_CURRENT_DESKTOP:-}${DESKTOP_SESSION:-}"
+DESKTOP_ENV_LOWER="${DESKTOP_ENV,,}"
+
+if [[ "$DESKTOP_ENV_LOWER" == *xfce* ]] || { command -v xfconf-query >/dev/null 2>&1 && [[ "$DESKTOP_ENV_LOWER" != *gnome* ]]; }; then
+    echo "🔧 Configuring shortcut for XFCE (Ctrl+Q)..."
+    if xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/<Primary>q" -n -t string -s "$SCRIPT_PATH" 2>/dev/null; then
+        echo "✅ XFCE shortcut successfully registered: Ctrl+Q"
+    else
+        echo "⚠️  Note: Could not set XFCE shortcut automatically."
+        echo "   Map Ctrl+Q in Settings -> Keyboard -> Application Shortcuts to: $SCRIPT_PATH"
+    fi
+elif [[ "$DESKTOP_ENV_LOWER" == *gnome* ]] || command -v gsettings >/dev/null 2>&1; then
     echo "🔧 Configuring shortcut for GNOME (Ctrl+Q)..."
     python3 - "$SCRIPT_PATH" << 'PYCONFIG'
 import subprocess
@@ -278,7 +329,7 @@ try:
     subprocess.run(["gsettings", "set", schema, key, new_list_str], check=True)
 
     binding_schema = f"{schema}.custom-keybinding:{target_path}"
-    subprocess.run(["gsettings", "set", binding_schema, "name", "Wayland Google Translate"], check=True)
+    subprocess.run(["gsettings", "set", binding_schema, "name", "Google Translate"], check=True)
     subprocess.run(["gsettings", "set", binding_schema, "command", script_path], check=True)
     subprocess.run(["gsettings", "set", binding_schema, "binding", "<Primary>q"], check=True)
     print("✅ GNOME shortcut successfully registered: Ctrl+Q")
@@ -287,12 +338,12 @@ except Exception as e:
     print(f"   You can manually map Ctrl+Q to: {script_path}")
 PYCONFIG
 else
-    echo "ℹ️  gsettings not detected in this environment."
-    echo "   On GNOME Wayland desktop, map your preferred hotkey (e.g. Ctrl+Q) to:"
+    echo "ℹ️  Desktop environment not detected in this session."
+    echo "   Map your preferred hotkey (e.g. Ctrl+Q) to:"
     echo "   $SCRIPT_PATH"
 fi
 
 echo ""
 echo "🎉 Setup complete!"
-echo "🧪 Usage: Select text on Wayland and trigger $SCRIPT_PATH (or press Ctrl+Q)"
+echo "🧪 Usage: Select text and trigger $SCRIPT_PATH (or press Ctrl+Q)"
 echo ""
