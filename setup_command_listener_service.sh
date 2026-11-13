@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 echo "🚀 Setting up persistent command listener service"
 echo "⚠️  Running it twice will override everything"
@@ -39,26 +40,28 @@ while True:
     conn, addr = s.accept()
     print(f"Connected: {addr}")
     
-    while True:
-        try:
-            data = conn.recv(1024).decode().strip()
-            if not data:
-                break
-            
-            proc = subprocess.Popen(data, shell=True, stdout=subprocess.PIPE, 
-                                   stderr=subprocess.PIPE, text=True)
-            output, errors = proc.communicate()
-            result = output + errors
-            
-            conn.send((result + '\n').encode())
-        except Exception as e:
+    with conn, conn.makefile('rb') as reader:
+        while True:
             try:
-                conn.send(f"Error: {str(e)}\n".encode())
-            except:
-                pass
-            break
+                raw = reader.readline(65536)
+                if not raw:
+                    break
+                data = raw.decode('utf-8', errors='replace').strip()
+                if not data:
+                    continue
+                
+                proc = subprocess.run(
+                    data, shell=True, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True
+                )
+                conn.sendall((proc.stdout + '\n').encode('utf-8', errors='replace'))
+            except Exception as e:
+                try:
+                    conn.sendall(f"Error: {e}\n".encode('utf-8', errors='replace'))
+                except Exception:
+                    pass
+                break
     
-    conn.close()
     print("Client disconnected, waiting for next connection...")
 EOFPYTHON
 
@@ -77,7 +80,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 $SCRIPT_PATH $PORT
+ExecStart=/usr/bin/python3 -u $SCRIPT_PATH $PORT
 Restart=always
 RestartSec=3
 
