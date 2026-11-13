@@ -206,59 +206,77 @@ log_msg "Text captured (${#RAW_TEXT} chars)"
 
 # Python translation logic via stdin and POST request
 PYTHON_SCRIPT=$(cat << 'PYEOF'
-import sys
+import html
 import json
-import urllib.request
-import urllib.parse
+import re
+import sys
 import urllib.error
+import urllib.parse
+import urllib.request
+
+UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+def fetch(url, data=None, headers=None):
+    hdrs = {"User-Agent": UA}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, data=data, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=12) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+def try_gtx(src, dst, text):
+    base = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={urllib.parse.quote(src)}&tl={urllib.parse.quote(dst)}&dt=t"
+    encoded = urllib.parse.urlencode({"q": text})
+    if len(encoded) <= 1800:
+        raw = fetch(f"{base}&{encoded}")
+    else:
+        raw = fetch(base, data=encoded.encode("utf-8"), headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"})
+    data = json.loads(raw)
+    if isinstance(data, list) and data and isinstance(data[0], list):
+        return "".join(item[0] for item in data[0] if isinstance(item, list) and item and item[0]).strip()
+    return ""
+
+def try_clients5(src, dst, text):
+    encoded = urllib.parse.urlencode({"client": "dict-chrome-ex", "sl": src, "tl": dst, "q": text})
+    raw = fetch(f"https://clients5.google.com/translate_a/t?{encoded}")
+    data = json.loads(raw)
+    if isinstance(data, list) and data:
+        if isinstance(data[0], str):
+            return "".join(data).strip()
+        if isinstance(data[0], list):
+            return "".join(item[0] for item in data if isinstance(item, list) and item and isinstance(item[0], str)).strip()
+    return ""
+
+def try_mobile_web(src, dst, text):
+    encoded = urllib.parse.urlencode({"sl": src, "tl": dst, "q": text})
+    raw = fetch(f"https://translate.google.com/m?{encoded}")
+    m = re.search(r'<div[^>]*class="result-container"[^>]*>(.*?)</div>', raw, re.S)
+    return html.unescape(m.group(1)).strip() if m else ""
 
 def main():
-    src = sys.argv[1] if len(sys.argv) > 1 else 'auto'
-    dst = sys.argv[2] if len(sys.argv) > 2 else 'fa'
+    src = sys.argv[1] if len(sys.argv) > 1 else "auto"
+    dst = sys.argv[2] if len(sys.argv) > 2 else "fa"
     text = sys.stdin.read()
-
     if not text.strip():
         sys.exit(2)
 
-    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={urllib.parse.quote(src)}&tl={urllib.parse.quote(dst)}&dt=t"
-    
-    # Send via POST to support long text without hitting HTTP 414 URI length limits
-    post_data = urllib.parse.urlencode({"q": text}).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=post_data,
-        headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8"
-        }
-    )
-
-    try:
-        with urllib.request.urlopen(req, timeout=12) as response:
-            payload = response.read().decode("utf-8", errors="replace")
-            data = json.loads(payload)
-
-        if data and isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-            translated_segments = [item[0] for item in data[0] if isinstance(item, list) and len(item) > 0 and item[0]]
-            translated_text = "".join(translated_segments).strip()
-            if translated_text:
-                sys.stdout.write(translated_text)
+    errors = []
+    for name, fn in (("gtx", try_gtx), ("clients5", try_clients5), ("mobile", try_mobile_web)):
+        try:
+            out = fn(src, dst, text)
+            if out:
+                sys.stdout.write(out)
                 return 0
+            errors.append(f"{name}: empty response")
+        except urllib.error.HTTPError as e:
+            errors.append(f"{name}: HTTP {e.code}")
+        except Exception as e:
+            errors.append(f"{name}: {e}")
 
-        sys.stderr.write("Invalid response structure from translation service.\n")
-        return 1
+    sys.stderr.write("All endpoints failed (" + "; ".join(errors) + ")\n")
+    return 1
 
-    except urllib.error.HTTPError as e:
-        sys.stderr.write(f"HTTP Error {e.code}: {e.reason}\n")
-        return 1
-    except urllib.error.URLError as e:
-        sys.stderr.write(f"Network Error: {e.reason}\n")
-        return 1
-    except Exception as e:
-        sys.stderr.write(f"Unexpected Error: {e}\n")
-        return 1
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())
 PYEOF
 )
