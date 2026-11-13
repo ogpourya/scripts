@@ -24,45 +24,49 @@ mkdir -p "$SCRIPT_DIR"
 # Create the Python script
 SCRIPT_PATH="$SCRIPT_DIR/cmd-listener.py"
 cat > "$SCRIPT_PATH" << 'EOFPYTHON'
-import socket
+import socketserver
 import subprocess
 import sys
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 4444
 
-s = socket.socket()
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('127.0.0.1', PORT))
-s.listen(1)
-print(f"Server running on port {PORT}...")
 
-while True:
-    conn, addr = s.accept()
-    print(f"Connected: {addr}")
-    
-    with conn, conn.makefile('rb') as reader:
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+class CommandHandler(socketserver.StreamRequestHandler):
+    def handle(self):
+        print(f"Connected: {self.client_address}")
         while True:
             try:
-                raw = reader.readline(65536)
+                raw = self.rfile.readline(65536)
                 if not raw:
                     break
                 data = raw.decode('utf-8', errors='replace').strip()
                 if not data:
                     continue
-                
+
                 proc = subprocess.run(
                     data, shell=True, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, text=True
                 )
-                conn.sendall((proc.stdout + '\n').encode('utf-8', errors='replace'))
+                self.wfile.write((proc.stdout + '\n').encode('utf-8', errors='replace'))
+                self.wfile.flush()
             except Exception as e:
                 try:
-                    conn.sendall(f"Error: {e}\n".encode('utf-8', errors='replace'))
+                    self.wfile.write(f"Error: {e}\n".encode('utf-8', errors='replace'))
+                    self.wfile.flush()
                 except Exception:
                     pass
                 break
-    
-    print("Client disconnected, waiting for next connection...")
+        print(f"Disconnected: {self.client_address}")
+
+
+with ThreadedTCPServer(('127.0.0.1', PORT), CommandHandler) as server:
+    print(f"Server running on 127.0.0.1:{PORT}...")
+    server.serve_forever()
 EOFPYTHON
 
 chmod +x "$SCRIPT_PATH"
@@ -110,7 +114,7 @@ if systemctl --user is-active --quiet "$SERVICE_NAME"; then
     echo ""
     echo "📱 Connect locally or forward via SSH:"
     echo "  nc 127.0.0.1 $PORT"
-    echo "  ssh -R $PORT:127.0.0.1:$PORT <vps>"
+    echo "  ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -R $PORT:127.0.0.1:$PORT <vps>"
 else
     echo ""
     echo "❌ Service failed to start. Check logs:"
