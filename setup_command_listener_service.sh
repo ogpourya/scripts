@@ -109,7 +109,8 @@ if systemctl --user is-active --quiet "$SERVICE_NAME"; then
     echo "  Logs:    journalctl --user -u $SERVICE_NAME -f"
     echo ""
     echo "📱 Connect using:"
-    echo "  nc $(hostname -I | awk '{print $1}') $PORT"
+    LOCAL_IP=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')
+    echo "  nc ${LOCAL_IP:-<host-ip>} $PORT"
 else
     echo ""
     echo "❌ Service failed to start. Check logs:"
